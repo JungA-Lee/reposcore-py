@@ -6,11 +6,11 @@ from typing import Annotated
 
 
 import typer
+from gql.transport.exceptions import TransportQueryError, TransportServerError
 
 from calc_score import UserContributionCounts
 from gh_service import fetch_contributions
 from output_writer import build_output, write_output
-
 
 DEFAULT_REPOSITORY = "oss2026hnu/reposcore-py"
 
@@ -54,7 +54,7 @@ def main(
     """Fetch basic repository counts from GitHub GraphQL API."""
 
     if len(repos) == 0:
-        typer.echo("오류: 저장소를 하나 이상 입력해주세요.", err=True)
+        print("오류: 저장소를 하나 이상 입력해주세요.", file=sys.stderr)
         raise typer.Exit(1)
         
     resolved_token = token or os.environ.get("GITHUB_TOKEN")
@@ -68,6 +68,28 @@ def main(
         try:
             contributions = fetch_contributions(repo, resolved_token)
             all_contributions.append(contributions)
+        
+        except ValueError as error:
+            print(f"오류 ({repo}): {error}", file=sys.stderr)
+            raise typer.Exit(1) from error
+
+        except TransportQueryError as error:
+            print(f"오류 ({repo}): 저장소를 찾을 수 없습니다. 존재 여부와 권한을 확인하세요. (Detail: {error})", file=sys.stderr)
+            raise typer.Exit(3) from error
+
+        except TransportServerError as error:
+            status_code = getattr(error, "code", None)
+
+            if status_code in [403, 429]:
+                print(f"오류 ({repo}): GitHub API 호출 한도(Rate Limit)를 초과했습니다. 잠시 후 다시 시도하세요. (Status: {status_code})", file=sys.stderr)
+                raise typer.Exit(2) from error
+            elif status_code == 401:
+                print(f"오류 ({repo}): GitHub API 인증에 실패했습니다. GITHUB_TOKEN을 확인하세요. (Status: {status_code})", file=sys.stderr)
+                raise typer.Exit(4) from error
+            else:
+                print(f"오류 ({repo}): GitHub 서버 통신 중 HTTP 오류가 발생했습니다. (Status: {status_code})", file=sys.stderr)
+                raise typer.Exit(1) from error
+        
         except Exception as error:
             print(f"오류 ({repo}): {error}", file=sys.stderr)
             raise typer.Exit(1) from error
